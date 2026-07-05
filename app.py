@@ -125,8 +125,8 @@ async def scrape_with_local_browser(url: str) -> dict:
     try:
         page = await context.new_page()
         await page.route("**/*", _block_heavy_resources)
-        await page.goto(url, timeout=20000, wait_until="domcontentloaded")
-        await page.wait_for_timeout(1000)
+        await page.goto(url, timeout=10000, wait_until="domcontentloaded")
+        await page.wait_for_timeout(500)
 
         title = await page.title()
         body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
@@ -154,7 +154,7 @@ async def scrape_with_browserless(url: str) -> dict:
         return {"ok": False, "error": "Browserless monthly usage cap reached"}
 
     endpoint = f"https://chrome.browserless.io/content?token={BROWSERLESS_TOKEN}"
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(endpoint, json={"url": url})
         resp.raise_for_status()
         html = resp.text
@@ -180,12 +180,7 @@ def get_stats():
     }
 
 
-@app.post("/scrape")
-async def scrape(req: ScrapeRequest):
-    url = req.url
-    if not url.startswith("http"):
-        url = "https://" + url
-
+async def _do_scrape(url: str) -> dict:
     stats["total_requests"] += 1
     start = time.monotonic()
 
@@ -241,3 +236,22 @@ async def scrape(req: ScrapeRequest):
             import sentry_sdk
             sentry_sdk.capture_exception(e)
         return {"success": False, "url": url, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/scrape")
+async def scrape(req: ScrapeRequest):
+    url = req.url
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    # Hard overall cap: Phase 1 (~10-13s worst case) + Phase 3 (~15s worst
+    # case) could otherwise approach or exceed RapidAPI's gateway timeout.
+    # Failing fast and cleanly here is better than letting the gateway
+    # kill the connection with an opaque 504.
+    try:
+        return await asyncio.wait_for(_do_scrape(url), timeout=22.0)
+    except asyncio.TimeoutError:
+        stats["total_failures"] += 1
+        stats["last_error"] = f"{url}: overall scrape timeout (22s)"
+        logger.error(f"FAIL  time=22.0s+  url={url}  error=overall timeout")
+        return {"success": False, "url": url, "error": "Scrape timed out after 22s"}
