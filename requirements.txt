@@ -4,8 +4,7 @@ playwright==1.56.0
 playwright-stealth==2.0.3
 httpx==0.28.1
 pydantic==2.13.4
-<<<<<<< HEAD
 sentry-sdk==2.64.0
-=======
-sentry-sdk==2.64.0
->>>>>>> 54609564432a2c7fe2cad2f7a9a02ed81fdd4246
+trafilatura
+beautifulsoup4
+langdetect
