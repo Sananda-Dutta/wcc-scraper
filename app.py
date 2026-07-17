@@ -227,9 +227,13 @@ async def scrape_with_browserless(url: str) -> dict:
         resp = await client.post(endpoint, json={"url": url})
         resp.raise_for_status()
         html = resp.text
+
+        # Guard against Browserless returning a 200 with an embedded error page
+        if len(html.strip()) < 100 or html.strip() in ("403", "401") or "not authorized" in html.lower():
+            return {"ok": False, "error": f"Browserless rejected request: {html[:200]}"}
+
         stats["browserless_calls"] += 1
         stats["browserless_calls_this_month"] += 1
-
         # Browserless doesn't give us page.title() or innerText directly —
         # pull title from the HTML itself, and run the same structured
         # extraction so Browserless-sourced scrapes are just as rich.
