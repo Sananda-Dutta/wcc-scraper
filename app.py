@@ -217,9 +217,7 @@ async def scrape_with_browserless(url: str) -> dict:
 
     _reset_browserless_counter_if_new_month()
     if stats["browserless_calls_this_month"] >= BROWSERLESS_MONTHLY_CAP:
-        logger.warning(
-            f"Browserless monthly cap ({BROWSERLESS_MONTHLY_CAP}) reached — refusing call to avoid overage."
-        )
+        logger.warning(f"Browserless monthly cap ({BROWSERLESS_MONTHLY_CAP}) reached — refusing call.")
         return {"ok": False, "error": "Browserless monthly usage cap reached"}
 
     endpoint = f"https://chrome.browserless.io/content?token={BROWSERLESS_TOKEN}"
@@ -228,17 +226,12 @@ async def scrape_with_browserless(url: str) -> dict:
         resp.raise_for_status()
         html = resp.text
 
-        # Browserless reports the TARGET site's real status here — separate
-        # from Browserless's own 200 OK, which just means "request attempted."
         target_status = resp.headers.get("X-Response-Code", "")
         stats["browserless_calls"] += 1
         stats["browserless_calls_this_month"] += 1
 
         if target_status and not target_status.startswith("2"):
-            return {
-                "ok": False,
-                "error": f"Target site returned {target_status} (likely blocking Browserless's IP)"
-            }
+            return {"ok": False, "error": f"Target site returned {target_status} (blocked)"}
 
         if len(html.strip()) < 100:
             return {"ok": False, "error": "Browserless returned near-empty content"}
@@ -247,13 +240,7 @@ async def scrape_with_browserless(url: str) -> dict:
         title = soup.title.get_text(strip=True) if soup.title else ""
         structured = extract_structured_content(html, "")
 
-        return {
-            "ok": True,
-            "html": html,
-            "title": title,
-            "text": structured["clean_text"],
-            **structured,
-        }
+        return {"ok": True, "html": html, "title": title, "text": structured["clean_text"], **structured}
     
 @app.get("/health")
 @app.head("/health")
