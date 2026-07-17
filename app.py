@@ -93,10 +93,10 @@ app = FastAPI(lifespan=lifespan)
 class ScrapeRequest(BaseModel):
     url: str
 
-
 def looks_blocked_or_thin(text: str) -> bool:
-    if not text or len(text.strip()) < 200:
+    if not text:
         return True
+
     signatures = [
         "checking your browser",
         "enable javascript",
@@ -107,7 +107,18 @@ def looks_blocked_or_thin(text: str) -> bool:
         "just a moment",
     ]
     lowered = text.lower()
-    return any(sig in lowered for sig in signatures)
+
+    # Signature match = definitely blocked, regardless of length
+    if any(sig in lowered for sig in signatures):
+        return True
+
+    # No blocking signature found — use length only as a weaker secondary
+    # signal, and drop the threshold since legitimate short pages exist
+    # (landing pages, minimal SaaS homepages, etc.)
+    if len(text.strip()) < 80:
+        return True
+
+    return False
 
 
 async def _block_heavy_resources(route):
