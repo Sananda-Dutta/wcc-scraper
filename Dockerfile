@@ -1,17 +1,17 @@
-FROM mcr.microsoft.com/playwright/python:v1.56.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.43.0-jammy
 
 WORKDIR /app
 
+# 1. Copy and install dependencies first (caches this step for speed)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 2. Copy the scraper application code
 COPY app.py .
-CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080}"]
-# HF Spaces expects port 7860; Railway sets its own $PORT automatically.
-# Defaulting to 7860 means this same Dockerfile works on both platforms
-# unchanged.
+
+# 3. Set a default port (Railway will override this automatically)
 ENV PORT=7860
 EXPOSE 7860
 
-CMD uvicorn app:app --host 0.0.0.0 --port ${PORT}
-
+# 4. The ONE and ONLY command to start your application
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]
