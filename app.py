@@ -228,15 +228,21 @@ async def scrape_with_browserless(url: str) -> dict:
         resp.raise_for_status()
         html = resp.text
 
-        # Guard against Browserless returning a 200 with an embedded error page
-        if len(html.strip()) < 100 or html.strip() in ("403", "401") or "not authorized" in html.lower():
-            return {"ok": False, "error": f"Browserless rejected request: {html[:200]}"}
-
+        # Browserless reports the TARGET site's real status here — separate
+        # from Browserless's own 200 OK, which just means "request attempted."
+        target_status = resp.headers.get("X-Response-Code", "")
         stats["browserless_calls"] += 1
         stats["browserless_calls_this_month"] += 1
-        # Browserless doesn't give us page.title() or innerText directly —
-        # pull title from the HTML itself, and run the same structured
-        # extraction so Browserless-sourced scrapes are just as rich.
+
+        if target_status and not target_status.startswith("2"):
+            return {
+                "ok": False,
+                "error": f"Target site returned {target_status} (likely blocking Browserless's IP)"
+            }
+
+        if len(html.strip()) < 100:
+            return {"ok": False, "error": "Browserless returned near-empty content"}
+
         soup = BeautifulSoup(html, "html.parser")
         title = soup.title.get_text(strip=True) if soup.title else ""
         structured = extract_structured_content(html, "")
