@@ -11,6 +11,10 @@ from pydantic import BaseModel
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
+import trafilatura
+from bs4 import BeautifulSoup
+from langdetect import detect, LangDetectException
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -112,6 +116,52 @@ async def _block_heavy_resources(route):
     else:
         await route.continue_()
 
+def extract_structured_content(html: str, raw_text: str) -> dict:
+    """
+    Pulls clean article text + high-signal metadata out of raw HTML.
+    Falls back gracefully at every step if a given extractor comes up empty.
+    """
+    # --- Clean main content via trafilatura (strips nav/ads/footers) ---
+    clean_text = trafilatura.extract(
+        html, include_comments=False, include_tables=False
+    ) or ""
+
+    # If trafilatura found nothing usable (happens on some non-article
+    # pages like pure landing pages), fall back to the raw innerText
+    # rather than returning empty.
+    if len(clean_text.strip()) < 50:
+        clean_text = raw_text
+
+    # --- Meta description, OG tags, headings via BeautifulSoup ---
+    soup = BeautifulSoup(html, "html.parser")
+
+    meta_tag = soup.find("meta", attrs={"name": "description"})
+    meta_description = meta_tag.get("content", "").strip() if meta_tag else ""
+
+    og_tag = soup.find("meta", attrs={"property": "og:description"})
+    og_description = og_tag.get("content", "").strip() if og_tag else ""
+
+    headings = " ".join(
+        h.get_text(strip=True) for h in soup.find_all(["h1", "h2", "h3"])
+    )
+
+    # --- Language detection ---
+    lang = "unknown"
+    detect_source = (clean_text or raw_text)[:500]
+    if len(detect_source.strip()) >= 20:
+        try:
+            lang = detect(detect_source)
+        except LangDetectException:
+            lang = "unknown"
+
+    return {
+        "clean_text": clean_text[:4000],
+        "meta_description": meta_description,
+        "og_description": og_description,
+        "headings": headings,
+        "language": lang,
+    }
+
 
 async def scrape_with_local_browser(url: str) -> dict:
     browser = state["browser"]
@@ -125,18 +175,26 @@ async def scrape_with_local_browser(url: str) -> dict:
     try:
         page = await context.new_page()
         await page.route("**/*", _block_heavy_resources)
-        await page.goto(url, timeout=10000, wait_until="domcontentloaded")
-        await page.wait_for_timeout(500)
+
+        # Item 4: slightly longer timeout + longer settle wait for SPAs
+        await page.goto(url, timeout=12000, wait_until="domcontentloaded")
+        await page.wait_for_timeout(1200)
 
         title = await page.title()
-        body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+        body_text = await page.evaluate(
+            "() => document.body ? document.body.innerText : ''"
+        )
         html = await page.content()
+
+        # Items 1 + 2: structured extraction
+        structured = extract_structured_content(html, body_text)
 
         return {
             "ok": True,
             "title": title,
             "text": body_text,
             "html": html,
+            **structured,
         }
     finally:
         await context.close()
@@ -160,13 +218,29 @@ async def scrape_with_browserless(url: str) -> dict:
         html = resp.text
         stats["browserless_calls"] += 1
         stats["browserless_calls_this_month"] += 1
-        return {"ok": True, "html": html, "title": "", "text": ""}
 
+        # Browserless doesn't give us page.title() or innerText directly —
+        # pull title from the HTML itself, and run the same structured
+        # extraction so Browserless-sourced scrapes are just as rich.
+        soup = BeautifulSoup(html, "html.parser")
+        title = soup.title.get_text(strip=True) if soup.title else ""
+        structured = extract_structured_content(html, "")
 
+        return {
+            "ok": True,
+            "html": html,
+            "title": title,
+            "text": structured["clean_text"],
+            **structured,
+        }
+    
 @app.get("/health")
+@app.head("/health")
 def health():
-    return {"status": "ok", "browser_ready": state["browser"] is not None}
-
+    return {
+        "status": "ok",
+        "browser_ready": state["browser"] is not None
+    }
 
 @app.get("/stats")
 def get_stats():
@@ -180,7 +254,12 @@ def get_stats():
     }
 
 
-async def _do_scrape(url: str) -> dict:
+@app.post("/scrape")
+async def scrape(req: ScrapeRequest):
+    url = req.url
+    if not url.startswith("http"):
+        url = "https://" + url
+
     stats["total_requests"] += 1
     start = time.monotonic()
 
@@ -198,7 +277,13 @@ async def _do_scrape(url: str) -> dict:
                 "title": result["title"],
                 "html": result["html"],
                 "data": result["text"],
+                "clean_text": result.get("clean_text", ""),
+                "meta_description": result.get("meta_description", ""),
+                "og_description": result.get("og_description", ""),
+                "headings": result.get("headings", ""),
+                "language": result.get("language", "unknown"),
             }
+        
         stats["phase1_failed"] += 1
         logger.info(f"Phase 1 thin/blocked result for {url}, escalating to Phase 3 (Browserless).")
     except Exception as e:
@@ -236,22 +321,3 @@ async def _do_scrape(url: str) -> dict:
             import sentry_sdk
             sentry_sdk.capture_exception(e)
         return {"success": False, "url": url, "error": f"{type(e).__name__}: {e}"}
-
-
-@app.post("/scrape")
-async def scrape(req: ScrapeRequest):
-    url = req.url
-    if not url.startswith("http"):
-        url = "https://" + url
-
-    # Hard overall cap: Phase 1 (~10-13s worst case) + Phase 3 (~15s worst
-    # case) could otherwise approach or exceed RapidAPI's gateway timeout.
-    # Failing fast and cleanly here is better than letting the gateway
-    # kill the connection with an opaque 504.
-    try:
-        return await asyncio.wait_for(_do_scrape(url), timeout=22.0)
-    except asyncio.TimeoutError:
-        stats["total_failures"] += 1
-        stats["last_error"] = f"{url}: overall scrape timeout (22s)"
-        logger.error(f"FAIL  time=22.0s+  url={url}  error=overall timeout")
-        return {"success": False, "url": url, "error": "Scrape timed out after 22s"}
