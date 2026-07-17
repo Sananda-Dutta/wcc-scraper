@@ -14,4 +14,8 @@ ENV PORT=7860
 EXPOSE 7860
 
 # 4. The ONE and ONLY command to start your application
+<<<<<<< HEAD
 CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]
+=======
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]
+>>>>>>> 1b3e194310a94a66e6df180cf404e5d1475ac02f

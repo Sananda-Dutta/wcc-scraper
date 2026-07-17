@@ -7,4 +7,8 @@ pydantic==2.13.4
 sentry-sdk==2.64.0
 trafilatura
 beautifulsoup4
+<<<<<<< HEAD
 langdetect
+=======
+langdetect
+>>>>>>> 1b3e194310a94a66e6df180cf404e5d1475ac02f
